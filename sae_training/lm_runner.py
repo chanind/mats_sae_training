@@ -1,46 +1,63 @@
-from typing import Any, cast
+from typing import Iterable
+
+from transformer_lens import HookedTransformer
 
 import wandb
+from sae_training.activations_store import ActivationsStore
 from sae_training.config import LanguageModelSAERunnerConfig
-
-# from sae_training.activation_store import ActivationStore
-from sae_training.train_sae_on_language_model import train_sae_on_language_model
+from sae_training.sae_group import SAEGroup
+from sae_training.sparse_autoencoder import SparseAutoencoder
+from sae_training.train_sae_on_language_model import train_sae_group_on_language_model
 from sae_training.utils import LMSparseAutoencoderSessionloader
 
 
-def language_model_sae_runner(cfg: LanguageModelSAERunnerConfig):
-    """ """
+def language_model_sae_group_runner_from_pretrained(path: str) -> SAEGroup:
+    (
+        model,
+        sae_group,
+        activations_loader,
+    ) = LMSparseAutoencoderSessionloader.load_session_from_pretrained(path)
+    return execute_language_model_sae_group_runner(model, sae_group, activations_loader)
 
-    if cfg.from_pretrained_path is not None:
-        (
-            model,
-            sparse_autoencoder,
-            activations_loader,
-        ) = LMSparseAutoencoderSessionloader.load_session_from_pretrained(
-            cfg.from_pretrained_path
+
+def language_model_sae_runner(cfg: LanguageModelSAERunnerConfig) -> SparseAutoencoder:
+    sae_group = language_model_sae_group_runner(cfg)
+    return sae_group.autoencoders[0]
+
+
+def language_model_sae_group_runner(
+    cfg: LanguageModelSAERunnerConfig | Iterable[LanguageModelSAERunnerConfig],
+) -> SAEGroup:
+    loader = LMSparseAutoencoderSessionloader(cfg)
+    model, sae_group, activations_loader = loader.load_session()
+    return execute_language_model_sae_group_runner(model, sae_group, activations_loader)
+
+
+def execute_language_model_sae_group_runner(
+    model: HookedTransformer, sae_group: SAEGroup, activations_loader: ActivationsStore
+):
+    shared_config = sae_group.shared_config
+
+    if shared_config.log_to_wandb:
+        wandb.init(
+            project=shared_config.wandb_project,
+            config=sae_group.get_combined_sae_configs(),
+            name=shared_config.run_name,
         )
-        cfg = sparse_autoencoder.cfg
-    else:
-        loader = LMSparseAutoencoderSessionloader(cfg)
-        model, sparse_autoencoder, activations_loader = loader.load_session()
-
-    if cfg.log_to_wandb:
-        wandb.init(project=cfg.wandb_project, config=cast(Any, cfg), name=cfg.run_name)
 
     # train SAE
-    sparse_autoencoder = train_sae_on_language_model(
+    train_output = train_sae_group_on_language_model(
         model,
-        sparse_autoencoder,
+        sae_group,
         activations_loader,
-        n_checkpoints=cfg.n_checkpoints,
-        batch_size=cfg.train_batch_size,
-        feature_sampling_window=cfg.feature_sampling_window,
-        dead_feature_threshold=cfg.dead_feature_threshold,
-        use_wandb=cfg.log_to_wandb,
-        wandb_log_frequency=cfg.wandb_log_frequency,
+        n_checkpoints=shared_config.n_checkpoints,
+        batch_size=shared_config.train_batch_size,
+        feature_sampling_window=shared_config.feature_sampling_window,
+        use_wandb=shared_config.log_to_wandb,
+        wandb_log_frequency=shared_config.wandb_log_frequency,
     )
 
-    if cfg.log_to_wandb:
+    if shared_config.log_to_wandb:
         wandb.finish()
 
-    return sparse_autoencoder
+    return train_output.sae_group

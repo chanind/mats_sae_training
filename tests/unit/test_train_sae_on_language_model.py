@@ -8,7 +8,7 @@ from datasets import Dataset
 from torch import Tensor
 from transformer_lens import HookedTransformer
 
-from sae_training.activations_store import ActivationsStore
+from sae_training.activations_store import ActivationsStore, ActivationsStoreConfig
 from sae_training.optim import get_scheduler
 from sae_training.sae_group import SAEGroup
 from sae_training.sparse_autoencoder import ForwardOutput, SparseAutoencoder
@@ -314,7 +314,8 @@ def test_train_sae_group_on_language_model__runs_and_outputs_look_reasonable(
     )
     # just a tiny datast which will run quickly
     dataset = Dataset.from_list([{"text": "hello world"}] * 1000)
-    activation_store = ActivationsStore(cfg, model=ts_model, dataset=dataset)
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
+    activation_store = ActivationsStore(store_cfg, model=ts_model, dataset=dataset)
     sae_group = SAEGroup(cfg)
     res = train_sae_group_on_language_model(
         model=ts_model,

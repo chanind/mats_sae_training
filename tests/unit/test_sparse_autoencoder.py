@@ -22,7 +22,7 @@ from tests.unit.helpers import build_sae_cfg
             "model_name": "tiny-stories-1M",
             "dataset_path": "roneneldan/TinyStories",
             "tokenized": False,
-            "hook_point": "blocks.1.hook_resid_pre",
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
             "hook_point_layer": 1,
             "d_in": 64,
         },
@@ -30,7 +30,7 @@ from tests.unit.helpers import build_sae_cfg
             "model_name": "tiny-stories-1M",
             "dataset_path": "apollo-research/roneneldan-TinyStories-tokenizer-gpt2",
             "tokenized": False,
-            "hook_point": "blocks.1.hook_resid_pre",
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
             "hook_point_layer": 1,
             "d_in": 64,
         },
@@ -38,7 +38,7 @@ from tests.unit.helpers import build_sae_cfg
             "model_name": "tiny-stories-1M",
             "dataset_path": "roneneldan/TinyStories",
             "tokenized": False,
-            "hook_point": "blocks.1.attn.hook_z",
+            "hook_point_template": "blocks.{layer}.attn.hook_z",
             "hook_point_layer": 1,
             "d_in": 64,
         },
@@ -49,7 +49,7 @@ from tests.unit.helpers import build_sae_cfg
         "tiny-stories-1M-attn-out",
     ],
 )
-def cfg(request: pytest.FixtureRequest):
+def cfg(request: pytest.FixtureRequest) -> LanguageModelSAERunnerConfig:
     """
     Pytest fixture to create a mock instance of LanguageModelSAERunnerConfig.
     """
@@ -232,9 +232,14 @@ def test_SparseAutoencoder_remove_gradient_parallel_to_decoder_directions() -> N
 
 
 def test_SparseAutoencoder_get_name_returns_correct_name_from_cfg_vals() -> None:
-    cfg = build_sae_cfg(model_name="test_model", hook_point="test_hook_point", d_sae=10)
+    cfg = build_sae_cfg(
+        model_name="test_model",
+        hook_point_template="block.{layer}.thing",
+        hook_point_layer=10,
+        d_sae=10,
+    )
     sae = SparseAutoencoder(cfg)
-    assert sae.get_name() == "sparse_autoencoder_test_model_test_hook_point_10"
+    assert sae.get_name() == "sparse_autoencoder_test_model_block.10.thing_10"
 
 
 def test_SparseAutoencoder_set_decoder_norm_to_unit_norm() -> None:

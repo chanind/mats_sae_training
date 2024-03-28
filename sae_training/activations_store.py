@@ -1,4 +1,5 @@
 import os
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Iterator, cast
 
 import torch
@@ -12,7 +13,49 @@ from datasets import (
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
 
+from sae_training.config import LanguageModelSAERunnerConfig
+
 HfDataset = DatasetDict | Dataset | IterableDatasetDict | IterableDataset
+
+
+@dataclass
+class ActivationsStoreConfig:
+    dataset_path: str
+    cached_activations_path: str | None
+    use_cached_activations: bool
+    is_dataset_tokenized: bool
+    total_training_tokens: int
+    n_batches_in_buffer: int
+    store_batch_size: int
+    context_size: int
+    device: str | torch.device
+    d_in: int
+    hook_point_layers: list[int]
+    hook_point_template: str
+    hook_point_head_index: int | None
+    train_batch_size: int
+    dtype: torch.dtype
+    prepend_bos: bool
+
+    @property
+    def hook_points(self) -> list[str]:
+        return [
+            self.hook_point_template.format(layer=layer)
+            for layer in self.hook_point_layers
+        ]
+
+    @classmethod
+    def from_sae_runner_config(
+        cls,
+        cfg: LanguageModelSAERunnerConfig,
+        hook_point_layers: list[int] | None = None,
+    ):
+        store_fields = {field.name for field in fields(ActivationsStoreConfig)}
+        cfg_dict = {k: v for k, v in asdict(cfg).items() if k in store_fields}
+        return cls(
+            **cfg_dict,
+            hook_point_layers=hook_point_layers or [cfg.hook_point_layer],
+        )
 
 
 class ActivationsStore:
@@ -23,7 +66,7 @@ class ActivationsStore:
 
     def __init__(
         self,
-        cfg: Any,
+        cfg: ActivationsStoreConfig,
         model: HookedTransformer,
         dataset: HfDataset | None = None,
         create_dataloader: bool = True,
@@ -160,12 +203,8 @@ class ActivationsStore:
 
         d_in may result from a concatenated head dimension.
         """
-        layers = (
-            self.cfg.hook_point_layer
-            if isinstance(self.cfg.hook_point_layer, list)
-            else [self.cfg.hook_point_layer]
-        )
-        act_names = [self.cfg.hook_point.format(layer=layer) for layer in layers]
+        layers = self.cfg.hook_point_layers
+        act_names = self.cfg.hook_points
         hook_point_max_layer = max(layers)
         layerwise_activations = self.model.run_with_cache(
             batch_tokens,
@@ -194,11 +233,7 @@ class ActivationsStore:
         batch_size = self.cfg.store_batch_size
         d_in = self.cfg.d_in
         total_size = batch_size * n_batches_in_buffer
-        num_layers = (
-            len(self.cfg.hook_point_layer)
-            if isinstance(self.cfg.hook_point_layer, list)
-            else 1
-        )  # Number of hook points or layers
+        num_layers = len(self.cfg.hook_point_layers)  # Number of hook points or layers
 
         if self.cfg.use_cached_activations:
             # Load the activations from disk

@@ -1,7 +1,7 @@
 import torch
 
 from sae_training.config import LanguageModelSAERunnerConfig
-from sae_training.lm_runner import language_model_sae_runner
+from sae_training.lm_runner import language_model_sae_group_runner
 
 
 def test_language_model_sae_runner():
@@ -15,7 +15,7 @@ def test_language_model_sae_runner():
     cfg = LanguageModelSAERunnerConfig(
         # Data Generating Function (Model + Training Distibuion)
         model_name="gelu-2l",
-        hook_point="blocks.0.hook_mlp_out",
+        hook_point_template="blocks.{layer}.hook_mlp_out",
         hook_point_layer=0,
         d_in=512,
         dataset_path="NeelNanda/c4-tokenized-2b",
@@ -49,7 +49,7 @@ def test_language_model_sae_runner():
         dtype=torch.float32,
     )
 
-    sparse_autoencoder = language_model_sae_runner(cfg)
+    sae_group = language_model_sae_group_runner(cfg)
 
-    assert sparse_autoencoder is not None
+    assert sae_group is not None
     # know whether or not this works by looking at the dashbaord!

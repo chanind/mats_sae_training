@@ -1,11 +1,19 @@
-from typing import Any, Tuple
+from collections.abc import Iterable
+from typing import NamedTuple, Tuple
 
 import torch
 from transformer_lens import HookedTransformer
 
-from sae_training.activations_store import ActivationsStore
+from sae_training.activations_store import ActivationsStore, ActivationsStoreConfig
+from sae_training.config import LanguageModelSAERunnerConfig
 from sae_training.sae_group import SAEGroup
 from sae_training.sparse_autoencoder import SparseAutoencoder
+
+
+class SAEGroupSession(NamedTuple):
+    model: HookedTransformer
+    sae_group: SAEGroup
+    activations_loader: ActivationsStore
 
 
 class LMSparseAutoencoderSessionloader:
@@ -16,27 +24,30 @@ class LMSparseAutoencoderSessionloader:
     or analysing a pretraining autoencoder
     """
 
-    def __init__(self, cfg: Any):
-        self.cfg = cfg
+    cfgs: LanguageModelSAERunnerConfig | Iterable[LanguageModelSAERunnerConfig]
+
+    def __init__(
+        self,
+        cfgs: LanguageModelSAERunnerConfig | Iterable[LanguageModelSAERunnerConfig],
+    ):
+        self.cfgs = cfgs
 
     def load_session(
         self,
-    ) -> Tuple[HookedTransformer, SAEGroup, ActivationsStore]:
+    ) -> SAEGroupSession:
         """
         Loads a session for training a sparse autoencoder on a language model.
         """
+        sae_group = SAEGroup(self.cfgs)
+        shared_config = sae_group.shared_config
+        model = self.get_model(shared_config.model_name)
+        model.to(shared_config.device)
+        activations_loader = self.get_activations_store(sae_group, model)
 
-        model = self.get_model(self.cfg.model_name)
-        model.to(self.cfg.device)
-        activations_loader = self.get_activations_loader(self.cfg, model)
-        sparse_autoencoder = self.initialize_sparse_autoencoder(self.cfg)
-
-        return model, sparse_autoencoder, activations_loader
+        return SAEGroupSession(model, sae_group, activations_loader)
 
     @classmethod
-    def load_session_from_pretrained(
-        cls, path: str
-    ) -> Tuple[HookedTransformer, SAEGroup, ActivationsStore]:
+    def load_session_from_pretrained(cls, path: str) -> SAEGroupSession:
         """
         Loads a session for analysing a pretrained sparse autoencoder group.
         """
@@ -59,13 +70,14 @@ class LMSparseAutoencoderSessionloader:
             ).load_session()
             sparse_autoencoders.autoencoders[0] = sparse_autoencoder
         elif type(sparse_autoencoders) is SAEGroup:
-            model, _, activations_loader = cls(sparse_autoencoders.cfg).load_session()
+            cfgs = [sae.cfg for sae in sparse_autoencoders.autoencoders]
+            model, _, activations_loader = cls(cfgs).load_session()
         else:
             raise ValueError(
                 "The loaded sparse_autoencoders object is neither an SAE dict nor a SAEGroup"
             )
 
-        return model, sparse_autoencoders, activations_loader
+        return SAEGroupSession(model, sparse_autoencoders, activations_loader)
 
     def get_model(self, model_name: str):
         """
@@ -78,22 +90,39 @@ class LMSparseAutoencoderSessionloader:
 
         return model
 
-    def initialize_sparse_autoencoder(self, cfg: Any):
-        """
-        Initializes a sparse autoencoder group, which contains multiple sparse autoencoders
-        """
-
-        sparse_autoencoder = SAEGroup(cfg)
-
-        return sparse_autoencoder
-
-    def get_activations_loader(self, cfg: Any, model: HookedTransformer):
+    def get_activations_store(
+        self,
+        sae_group: SAEGroup,
+        model: HookedTransformer,
+    ):
         """
         Loads a DataLoaderBuffer for the activations of a language model.
         """
+        shared_cfg = sae_group.shared_config
+        layers = sorted(
+            list({sae.cfg.hook_point_layer for sae in sae_group.autoencoders})
+        )
+        activations_store_cfg = ActivationsStoreConfig(
+            hook_point_template=shared_cfg.hook_point_template,
+            hook_point_head_index=shared_cfg.hook_point_head_index,
+            dataset_path=shared_cfg.dataset_path,
+            is_dataset_tokenized=shared_cfg.is_dataset_tokenized,
+            context_size=shared_cfg.context_size,
+            use_cached_activations=shared_cfg.use_cached_activations,
+            cached_activations_path=shared_cfg.cached_activations_path,
+            n_batches_in_buffer=shared_cfg.n_batches_in_buffer,
+            total_training_tokens=shared_cfg.total_training_tokens,
+            store_batch_size=shared_cfg.store_batch_size,
+            d_in=shared_cfg.d_in,
+            device=shared_cfg.device,
+            dtype=shared_cfg.dtype,
+            train_batch_size=shared_cfg.train_batch_size,
+            hook_point_layers=layers,
+            prepend_bos=shared_cfg.prepend_bos,
+        )
 
         activations_loader = ActivationsStore(
-            cfg,
+            activations_store_cfg,
             model,
         )
 

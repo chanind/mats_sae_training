@@ -1,5 +1,7 @@
+import re
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from itertools import product
 from typing import Any, Optional, cast
 
 import torch
@@ -15,7 +17,7 @@ class RunnerConfig(ABC):
 
     # Data Generating Function (Model + Training Distibuion)
     model_name: str = "gelu-2l"
-    hook_point: str = "blocks.{layer}.hook_mlp_out"
+    hook_point_template: str = "blocks.{layer}.hook_mlp_out"
     hook_point_layer: int = 0
     hook_point_head_index: Optional[int] = None
     dataset_path: str = "NeelNanda/c4-tokenized-2b"
@@ -33,11 +35,20 @@ class RunnerConfig(ABC):
     n_batches_in_buffer: int = 20
     total_training_tokens: int = 2_000_000
     store_batch_size: int = 32
+    prepend_bos: bool = True
+
+    # training
+    train_batch_size: int = 4096
 
     # Misc
     device: str | torch.device = "cpu"
     seed: int = 42
     dtype: torch.dtype = torch.float32
+
+    @property
+    def hook_point(self) -> str:
+        """Return the hook point for the model, combining hook_point_layer with hook_point_template."""
+        return self.hook_point_template.format(layer=self.hook_point_layer)
 
     def __post_init__(self):
         # Autofill cached_activations_path unless the user overrode it
@@ -45,6 +56,18 @@ class RunnerConfig(ABC):
             self.cached_activations_path = f"activations/{self.dataset_path.replace('/', '_')}/{self.model_name.replace('/', '_')}/{self.hook_point}"
             if self.hook_point_head_index is not None:
                 self.cached_activations_path += f"_{self.hook_point_head_index}"
+
+    def __setstate__(self, state: dict[str, Any]):
+        # handle changed / deprecated fields names
+
+        # Handle loading old configs before "hook_point_template" was introduced
+        # torch.load will put the old field into the state of the object
+        if "hook_point" in state:
+            state["hook_point_template"] = re.sub(
+                r"\d+", "{layer}", state["hook_point"]
+            )
+            del state["hook_point"]
+        self.__dict__.update(state)
 
 
 @dataclass
@@ -63,11 +86,10 @@ class LanguageModelSAERunnerConfig(RunnerConfig):
     l1_coefficient: float = 1e-3
     lp_norm: float = 1
     lr: float = 3e-4
-    lr_scheduler_name: str = (
+    lr_scheduler_name: str | None = (
         "constantwithwarmup"  # constant, constantwithwarmup, linearwarmupdecay, cosineannealing, cosineannealingwarmup
     )
     lr_warm_up_steps: int = 500
-    train_batch_size: int = 4096
 
     # Resampling protocol args
     use_ghost_grads: bool = False  # want to change this to true on some timeline.
@@ -86,7 +108,6 @@ class LanguageModelSAERunnerConfig(RunnerConfig):
     # Misc
     n_checkpoints: int = 0
     checkpoint_path: str = "checkpoints"
-    prepend_bos: bool = True
     verbose: bool = True
 
     def __post_init__(self):
@@ -158,6 +179,28 @@ class LanguageModelSAERunnerConfig(RunnerConfig):
         if self.use_ghost_grads:
             print("Using Ghost Grads.")
 
+    def generate_param_combinations(
+        self,
+        param_combinations: dict[str, list[Any]],
+    ) -> list["LanguageModelSAERunnerConfig"]:
+        """
+        Build all possible hyperparameter combinations on this config from the given lists of hyperparameters.
+        """
+        cfgs: list[LanguageModelSAERunnerConfig] = []
+        # Extract all hyperparameter lists
+        if len(param_combinations) > 0:
+            keys, values = zip(*param_combinations.items())
+        else:
+            keys, values = (), ([()],)  # Ensure product(*values) yields one combination
+
+        # Create all combinations of hyperparameters
+        for combination in product(*values):
+            params = dict(zip(keys, combination))
+            cfg_variation = replace(self, **params)
+            cfg_variation.__post_init__()
+            cfgs.append(cfg_variation)
+        return cfgs
+
 
 @dataclass
 class CacheActivationsRunnerConfig(RunnerConfig):
@@ -170,6 +213,9 @@ class CacheActivationsRunnerConfig(RunnerConfig):
     n_shuffles_with_last_section: int = 10
     n_shuffles_in_entire_dir: int = 10
     n_shuffles_final: int = 100
+
+    # Model Parameters
+    hook_point_layers: list[int] = field(default_factory=lambda: [0])
 
     def __post_init__(self):
         super().__post_init__()

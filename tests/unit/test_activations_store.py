@@ -1,13 +1,13 @@
 from collections.abc import Iterable
 from math import ceil
-from types import SimpleNamespace
 
 import pytest
 import torch
 from datasets import Dataset, IterableDataset
 from transformer_lens import HookedTransformer
 
-from sae_training.activations_store import ActivationsStore
+from sae_training.activations_store import ActivationsStore, ActivationsStoreConfig
+from sae_training.config import LanguageModelSAERunnerConfig
 from tests.unit.helpers import build_sae_cfg
 
 
@@ -24,8 +24,8 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
             "model_name": "tiny-stories-1M",
             "dataset_path": "roneneldan/TinyStories",
             "tokenized": False,
-            "hook_point": "blocks.1.hook_resid_pre",
-            "hook_point_layer": 1,
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
+            "hook_point_layers": [1],
             "d_in": 64,
             "prepend_bos": True,
         },
@@ -33,8 +33,8 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
             "model_name": "tiny-stories-1M",
             "dataset_path": "roneneldan/TinyStories",
             "tokenized": False,
-            "hook_point": "blocks.1.attn.hook_z",
-            "hook_point_layer": 1,
+            "hook_point_template": "blocks.{layer}.attn.hook_z",
+            "hook_point_layers": [1],
             "d_in": 64,
             "prepend_bos": True,
         },
@@ -42,8 +42,8 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
             "model_name": "gelu-2l",
             "dataset_path": "NeelNanda/c4-tokenized-2b",
             "tokenized": True,
-            "hook_point": "blocks.1.hook_resid_pre",
-            "hook_point_layer": 1,
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
+            "hook_point_layers": [1],
             "d_in": 512,
             "prepend_bos": True,
         },
@@ -51,8 +51,8 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
             "model_name": "gpt2",
             "dataset_path": "apollo-research/sae-monology-pile-uncopyrighted-tokenizer-gpt2",
             "tokenized": True,
-            "hook_point": "blocks.1.hook_resid_pre",
-            "hook_point_layer": 1,
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
+            "hook_point_layers": [1],
             "d_in": 768,
             "prepend_bos": True,
         },
@@ -60,8 +60,8 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
             "model_name": "gpt2",
             "dataset_path": "Skylion007/openwebtext",
             "tokenized": False,
-            "hook_point": "blocks.1.hook_resid_pre",
-            "hook_point_layer": 1,
+            "hook_point_template": "blocks.{layer}.hook_resid_pre",
+            "hook_point_layers": [1],
             "d_in": 768,
             "prepend_bos": True,
         },
@@ -74,67 +74,29 @@ def tokenize_with_bos(model: HookedTransformer, text: str) -> list[int]:
         "gpt2",
     ],
 )
-def cfg(request: pytest.FixtureRequest) -> SimpleNamespace:
+def cfg(request: pytest.FixtureRequest) -> LanguageModelSAERunnerConfig:
     # This function will be called with each parameter set
     params = request.param
-    mock_config = SimpleNamespace()
-    mock_config.model_name = params["model_name"]
-    mock_config.dataset_path = params["dataset_path"]
-    mock_config.is_dataset_tokenized = params["tokenized"]
-    mock_config.hook_point = params["hook_point"]
-    mock_config.hook_point_layer = params["hook_point_layer"]
-    mock_config.d_in = params["d_in"]
-    mock_config.expansion_factor = 2
-    mock_config.d_sae = mock_config.d_in * mock_config.expansion_factor
-    mock_config.l1_coefficient = 2e-3
-    mock_config.lr = 2e-4
-    mock_config.train_batch_size = 32
-    mock_config.context_size = 16
-    mock_config.use_cached_activations = False
-    mock_config.hook_point_head_index = None
-
-    mock_config.feature_sampling_method = None
-    mock_config.feature_sampling_window = 50
-    mock_config.feature_reinit_scale = 0.1
-    mock_config.dead_feature_threshold = 1e-7
-
-    mock_config.n_batches_in_buffer = 4
-    mock_config.total_training_tokens = 1_000_000
-    mock_config.store_batch_size = 32
-
-    mock_config.log_to_wandb = False
-    mock_config.wandb_project = "test_project"
-    mock_config.wandb_entity = "test_entity"
-    mock_config.wandb_log_frequency = 10
-    mock_config.device = torch.device("cpu")
-    mock_config.seed = 24
-    mock_config.checkpoint_path = "test/checkpoints"
-    mock_config.dtype = torch.float32
-    mock_config.prepend_bos = params["prepend_bos"]
-    return mock_config
+    return build_sae_cfg(**params)
 
 
 @pytest.fixture
-def model(cfg: SimpleNamespace):
+def model(cfg: LanguageModelSAERunnerConfig):
     return HookedTransformer.from_pretrained(cfg.model_name, device="cpu")
 
 
 @pytest.fixture
-def activation_store(cfg: SimpleNamespace, model: HookedTransformer):
-    return ActivationsStore(cfg, model)
+def activation_store(cfg: LanguageModelSAERunnerConfig, model: HookedTransformer):
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
+    return ActivationsStore(store_cfg, model)
 
 
-@pytest.fixture
-def activation_store_head_hook(
-    cfg_head_hook: SimpleNamespace, model: HookedTransformer
+def test_activations_store__init__(
+    cfg: LanguageModelSAERunnerConfig, model: HookedTransformer
 ):
-    return ActivationsStore(cfg_head_hook, model)
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
+    store = ActivationsStore(store_cfg, model)
 
-
-def test_activations_store__init__(cfg: SimpleNamespace, model: HookedTransformer):
-    store = ActivationsStore(cfg, model)
-
-    assert store.cfg == cfg
     assert store.model == model
 
     assert isinstance(store.dataset, IterableDataset)
@@ -192,12 +154,13 @@ def test_activations_store__get_activations(activation_store: ActivationsStore):
 
 def test_activations_store__get_activations_head_hook(ts_model: HookedTransformer):
     cfg = build_sae_cfg(
-        hook_point="blocks.0.attn.hook_q",
+        hook_point_template="blocks.{layer}.attn.hook_q",
         hook_point_head_index=2,
         hook_point_layer=1,
         d_in=4,
     )
-    activation_store_head_hook = ActivationsStore(cfg, ts_model)
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
+    activation_store_head_hook = ActivationsStore(store_cfg, ts_model)
     batch = activation_store_head_hook.get_batch_tokens()
     activations = activation_store_head_hook.get_activations(batch)
 
@@ -235,9 +198,10 @@ def test_activations_store__get_batch_tokens__fills_the_context_separated_by_bos
         store_batch_size=2,
         context_size=context_size,
     )
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
 
     activation_store = ActivationsStore(
-        cfg, ts_model, dataset=dataset, create_dataloader=False
+        store_cfg, ts_model, dataset=dataset, create_dataloader=False
     )
     encoded_text = tokenize_with_bos(ts_model, "hello world")
     tokens = activation_store.get_batch_tokens()
@@ -257,6 +221,7 @@ def test_activations_store__get_next_dataset_tokens__tokenizes_each_example_in_o
     ts_model: HookedTransformer,
 ):
     cfg = build_sae_cfg()
+    store_cfg = ActivationsStoreConfig.from_sae_runner_config(cfg)
     dataset = Dataset.from_list(
         [
             {"text": "hello world1"},
@@ -265,7 +230,7 @@ def test_activations_store__get_next_dataset_tokens__tokenizes_each_example_in_o
         ]
     )
     activation_store = ActivationsStore(
-        cfg, ts_model, dataset=dataset, create_dataloader=False
+        store_cfg, ts_model, dataset=dataset, create_dataloader=False
     )
 
     assert activation_store._get_next_dataset_tokens().tolist() == tokenize_with_bos(

@@ -9,6 +9,7 @@ from transformer_lens import HookedTransformer
 
 import wandb
 from sae_training.activations_store import ActivationsStore
+from sae_training.config import LanguageModelSAERunnerConfig
 from sae_training.evals import run_evals
 from sae_training.geometric_median import compute_geometric_median
 from sae_training.optim import get_scheduler
@@ -76,7 +77,8 @@ def train_sae_group_on_language_model(
     use_wandb: bool = False,
     wandb_log_frequency: int = 50,
 ) -> TrainSAEGroupOutput:
-    total_training_tokens = sae_group.cfg.total_training_tokens
+    shared_config = sae_group.shared_config
+    total_training_tokens = shared_config.total_training_tokens
     total_training_steps = total_training_tokens // batch_size
     n_training_steps = 0
     n_training_tokens = 0
@@ -87,10 +89,7 @@ def train_sae_group_on_language_model(
             range(0, total_training_tokens, total_training_tokens // n_checkpoints)
         )[1:]
 
-    all_layers = sae_group.cfg.hook_point_layer
-    if not isinstance(all_layers, list):
-        all_layers = [all_layers]
-
+    all_layers = [sae.cfg.hook_point_layer for sae in sae_group.autoencoders]
     train_contexts = [
         _build_train_context(sae, total_training_steps) for sae in sae_group
     ]
@@ -110,7 +109,7 @@ def train_sae_group_on_language_model(
             sparse_autoencoder,
             ctx,
         ) in zip(sae_group, train_contexts):
-            wandb_suffix = _wandb_log_suffix(sae_group.cfg, sparse_autoencoder.cfg)
+            wandb_suffix = _wandb_log_suffix(sae_group, sparse_autoencoder.cfg)
             step_output = _train_step(
                 sparse_autoencoder=sparse_autoencoder,
                 layer_acts=layer_acts,
@@ -184,7 +183,7 @@ def train_sae_group_on_language_model(
     )
 
 
-def _wandb_log_suffix(cfg: Any, hyperparams: Any):
+def _wandb_log_suffix(sae_group: SAEGroup, hyperparams: LanguageModelSAERunnerConfig):
     # Create a mapping from cfg list keys to their corresponding hyperparams attributes
     key_mapping = {
         "hook_point_layer": "layer",
@@ -196,7 +195,7 @@ def _wandb_log_suffix(cfg: Any, hyperparams: Any):
     # Generate the suffix by iterating over the keys that have list values in cfg
     suffix = "".join(
         f"_{key_mapping.get(key, key)}{getattr(hyperparams, key, '')}"
-        for key, value in vars(cfg).items()
+        for key, value in sae_group.get_combined_sae_configs().items()
         if isinstance(value, list)
     )
     return suffix
@@ -416,22 +415,23 @@ def _save_checkpoint(
     checkpoint_name: int | str,
     wandb_aliases: list[str] | None = None,
 ) -> SaveCheckpointOutput:
+    shared_config = sae_group.shared_config
     path = (
-        f"{sae_group.cfg.checkpoint_path}/{checkpoint_name}_{sae_group.get_name()}.pt"
+        f"{shared_config.checkpoint_path}/{checkpoint_name}_{sae_group.get_name()}.pt"
     )
     for sae in sae_group:
         sae.set_decoder_norm_to_unit_norm()
     sae_group.save_model(path)
-    log_feature_sparsity_path = f"{sae_group.cfg.checkpoint_path}/{checkpoint_name}_{sae_group.get_name()}_log_feature_sparsity.pt"
+    log_feature_sparsity_path = f"{shared_config.checkpoint_path}/{checkpoint_name}_{sae_group.get_name()}_log_feature_sparsity.pt"
     log_feature_sparsities = [
         _log_feature_sparsity(ctx.feature_sparsity) for ctx in train_contexts
     ]
     torch.save(log_feature_sparsities, log_feature_sparsity_path)
-    if sae_group.cfg.log_to_wandb:
+    if shared_config.log_to_wandb:
         model_artifact = wandb.Artifact(
             f"{sae_group.get_name()}",
             type="model",
-            metadata=dict(sae_group.cfg.__dict__),
+            metadata=sae_group.get_combined_sae_configs(),
         )
         model_artifact.add_file(path)
         wandb.log_artifact(model_artifact, aliases=wandb_aliases)
@@ -439,7 +439,7 @@ def _save_checkpoint(
         sparsity_artifact = wandb.Artifact(
             f"{sae_group.get_name()}_log_feature_sparsity",
             type="log_feature_sparsity",
-            metadata=dict(sae_group.cfg.__dict__),
+            metadata=sae_group.get_combined_sae_configs(),
         )
         sparsity_artifact.add_file(log_feature_sparsity_path)
         wandb.log_artifact(sparsity_artifact)

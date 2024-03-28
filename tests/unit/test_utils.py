@@ -1,5 +1,4 @@
 import tempfile
-from typing import Any
 
 import pytest
 import torch
@@ -19,41 +18,9 @@ def cfg():
     """
     Pytest fixture to create a mock instance of LanguageModelSAERunnerConfig.
     """
-    # # Create a mock object with the necessary attributes
-    # mock_config = SimpleNamespace()
-    # mock_config.model_name = TEST_MODEL
-    # mock_config.hook_point = "blocks.0.hook_mlp_out"
-    # mock_config.hook_point_layer = 0
-    # mock_config.dataset_path = TEST_DATASET
-    # mock_config.is_dataset_tokenized = False
-    # mock_config.d_in = 64
-    # mock_config.expansion_factor = 2
-    # mock_config.d_sae = mock_config.d_in * mock_config.expansion_factor
-    # mock_config.l1_coefficient = 2e-3
-    # mock_config.lr = 2e-4
-    # mock_config.train_batch_size = 512
-    # mock_config.context_size = 64
-    # mock_config.feature_sampling_method = None
-    # mock_config.feature_sampling_window = 50
-    # mock_config.feature_reinit_scale = 0.2
-    # mock_config.dead_feature_threshold = 1e-7
-    # mock_config.n_batches_in_buffer = 2
-    # mock_config.total_training_tokens = 1_000_000
-    # mock_config.store_batch_size = 128
-    # mock_config.log_to_wandb = False
-    # mock_config.wandb_project = "test_project"
-    # mock_config.wandb_entity = "test_entity"
-    # mock_config.wandb_log_frequency = 10
-    # mock_config.device = "cpu"
-    # mock_config.seed = 24
-    # mock_config.checkpoint_path = "test/checkpoints"
-    # mock_config.dtype = torch.float32
-    # mock_config.use_cached_activations = False
-    # mock_config.hook_point_head_index = None
-
     cfg = LanguageModelSAERunnerConfig(
         model_name=TEST_MODEL,
-        hook_point="blocks.0.hook_mlp_out",
+        hook_point_template="blocks.{layer}.hook_mlp_out",
         hook_point_layer=0,
         dataset_path=TEST_DATASET,
         is_dataset_tokenized=False,
@@ -73,7 +40,6 @@ def cfg():
         wandb_entity="test_entity",
         wandb_log_frequency=10,
         device="cpu",
-        seed=24,
         checkpoint_path="test/checkpoints",
         dtype=torch.float32,
         use_cached_activations=False,
@@ -83,12 +49,14 @@ def cfg():
     return cfg
 
 
-def test_LMSparseAutoencoderSessionloader_init(cfg: Any):
+def test_LMSparseAutoencoderSessionloader_init(cfg: LanguageModelSAERunnerConfig):
     loader = LMSparseAutoencoderSessionloader(cfg)
-    assert loader.cfg == cfg
+    assert loader.cfgs == cfg
 
 
-def test_LMSparseAutoencoderSessionloader_load_session(cfg: Any):
+def test_LMSparseAutoencoderSessionloader_load_session(
+    cfg: LanguageModelSAERunnerConfig,
+):
     loader = LMSparseAutoencoderSessionloader(cfg)
     model, sae_group, activations_loader = loader.load_session()
 
@@ -97,7 +65,9 @@ def test_LMSparseAutoencoderSessionloader_load_session(cfg: Any):
     assert isinstance(activations_loader, ActivationsStore)
 
 
-def test_LMSparseAutoencoderSessionloader_load_session_from_trained(cfg: Any):
+def test_LMSparseAutoencoderSessionloader_load_session_from_trained(
+    cfg: LanguageModelSAERunnerConfig,
+):
     loader = LMSparseAutoencoderSessionloader(cfg)
     _, sae_group, _ = loader.load_session()
 
@@ -110,9 +80,11 @@ def test_LMSparseAutoencoderSessionloader_load_session_from_trained(cfg: Any):
             new_sae_group,
             _,
         ) = LMSparseAutoencoderSessionloader.load_session_from_pretrained(tempfile_path)
-    new_sae_group.cfg.device = torch.device("cpu")
+    for sae in new_sae_group.autoencoders:
+        sae.cfg.device = torch.device("cpu")
     new_sae_group.to("cpu")
-    assert new_sae_group.cfg == sae_group.cfg
+    for new_sae, old_sae in zip(new_sae_group.autoencoders, sae_group.autoencoders):
+        assert new_sae.cfg == old_sae.cfg
     # assert weights are the same
     new_parameters = dict(new_sae_group.autoencoders[0].named_parameters())
     for name, param in sae_group.autoencoders[0].named_parameters():
